@@ -49,6 +49,8 @@ export class DiffPanel {
   private scrollPositions: Map<string, number> = new Map();
   private settings: DiffPanelSettings = DEFAULT_SETTINGS;
   private context: vscode.ExtensionContext;
+  private fileWatcher: vscode.FileSystemWatcher | undefined;
+  private refreshTimeout: NodeJS.Timeout | undefined;
 
   constructor(context: vscode.ExtensionContext) {
     this.context = context;
@@ -62,12 +64,51 @@ export class DiffPanel {
     }
   }
 
+  private setupFileWatcher(repoPath: string): void {
+    // Dispose existing watcher if any
+    this.disposeFileWatcher();
+
+    // Watch all files in the repo
+    const pattern = new vscode.RelativePattern(repoPath, '**/*');
+    this.fileWatcher = vscode.workspace.createFileSystemWatcher(pattern);
+
+    const triggerRefresh = () => {
+      // Debounce: wait for file operations to settle
+      if (this.refreshTimeout) {
+        clearTimeout(this.refreshTimeout);
+      }
+      this.refreshTimeout = setTimeout(() => {
+        if (this.activePanel && this.currentRepo) {
+          this.updatePanelContent(this.activePanel, this.currentRepo);
+        }
+      }, 500);
+    };
+
+    this.fileWatcher.onDidChange(triggerRefresh);
+    this.fileWatcher.onDidCreate(triggerRefresh);
+    this.fileWatcher.onDidDelete(triggerRefresh);
+  }
+
+  private disposeFileWatcher(): void {
+    if (this.refreshTimeout) {
+      clearTimeout(this.refreshTimeout);
+      this.refreshTimeout = undefined;
+    }
+    if (this.fileWatcher) {
+      this.fileWatcher.dispose();
+      this.fileWatcher = undefined;
+    }
+  }
+
   async showDiff(
     repo: DetectedRepo,
     viewColumn: vscode.ViewColumn = vscode.ViewColumn.One
   ): Promise<void> {
     // Update current repo reference
     this.currentRepo = repo;
+
+    // Setup file watcher for auto-refresh
+    this.setupFileWatcher(repo.path);
 
     if (this.activePanel) {
       // Reuse existing panel - update title and content
@@ -94,6 +135,7 @@ export class DiffPanel {
 
     // Handle panel disposal
     this.activePanel.onDidDispose(() => {
+      this.disposeFileWatcher();
       this.activePanel = undefined;
       this.currentRepo = undefined;
     });
@@ -1084,6 +1126,7 @@ export class DiffPanel {
   }
 
   dispose(): void {
+    this.disposeFileWatcher();
     if (this.activePanel) {
       this.activePanel.dispose();
       this.activePanel = undefined;
