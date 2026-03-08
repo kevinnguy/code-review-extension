@@ -4,6 +4,41 @@
 export const MAX_DIFF_LINES = 1000;
 
 /**
+ * Escapes strings for safe use in JavaScript string literals (e.g., onclick handlers).
+ * Handles backslashes, quotes, newlines, and other special characters.
+ */
+export function escapeJsString(str: string): string {
+  if (!str) return '';
+  let result = '';
+  for (let i = 0; i < str.length; i++) {
+    const char = str[i];
+    switch (char) {
+      case '\\':
+        result += '\\\\';
+        break;
+      case "'":
+        result += "\\'";
+        break;
+      case '"':
+        result += '\\"';
+        break;
+      case '\n':
+        result += '\\n';
+        break;
+      case '\r':
+        result += '\\r';
+        break;
+      case '\t':
+        result += '\\t';
+        break;
+      default:
+        result += char;
+    }
+  }
+  return result;
+}
+
+/**
  * Escapes HTML special characters using single-pass character replacement.
  * This is optimized for performance over multiple regex replacements.
  */

@@ -16,6 +16,7 @@ import { DetectedRepo } from '../utils/repoDetector';
 import { gitService, DiffFile, CommitInfo } from '../services/gitService';
 import {
   escapeHtml,
+  escapeJsString,
   getLanguageFromFile,
   MAX_DIFF_LINES,
 } from '../utils/diffUtils';
@@ -43,6 +44,9 @@ const DEFAULT_SETTINGS: DiffPanelSettings = {
 
 const DIFF_PANEL_SETTINGS_KEY = 'code-review.diffPanelSettings';
 
+const FILE_CHANGE_DEBOUNCE_MS = 500;
+const READY_FALLBACK_TIMEOUT_MS = 1000;
+
 export class DiffPanel {
   private activePanel: vscode.WebviewPanel | undefined;
   private currentRepo: DetectedRepo | undefined;
@@ -52,6 +56,7 @@ export class DiffPanel {
   private fileWatcher: vscode.FileSystemWatcher | undefined;
   private refreshTimeout: NodeJS.Timeout | undefined;
   private isLoading: boolean = false;
+  private messageSubscription: vscode.Disposable | undefined;
 
   constructor(context: vscode.ExtensionContext) {
     this.context = context;
@@ -82,7 +87,7 @@ export class DiffPanel {
         if (this.activePanel && this.currentRepo) {
           this.updatePanelContent(this.activePanel, this.currentRepo, false);
         }
-      }, 500);
+      }, FILE_CHANGE_DEBOUNCE_MS);
     };
 
     this.fileWatcher.onDidChange(triggerRefresh);
@@ -144,12 +149,19 @@ export class DiffPanel {
     // Handle panel disposal
     this.activePanel.onDidDispose(() => {
       this.disposeFileWatcher();
+      if (this.messageSubscription) {
+        this.messageSubscription.dispose();
+        this.messageSubscription = undefined;
+      }
+      if (this.currentRepo) {
+        this.scrollPositions.delete(this.currentRepo.path);
+      }
       this.activePanel = undefined;
       this.currentRepo = undefined;
     });
 
     // Handle messages from webview - use this.currentRepo instead of captured repo
-    this.activePanel.webview.onDidReceiveMessage(async (message) => {
+    this.messageSubscription = this.activePanel.webview.onDidReceiveMessage(async (message) => {
       if (!this.currentRepo || !this.activePanel) return;
 
       if (message.command === 'refresh') {
@@ -209,12 +221,32 @@ export class DiffPanel {
   }
 
   private getPrismLanguage(lang: string): string {
+    // Explicit mappings for all loaded Prism languages to prevent silent failures
     const mapping: Record<string, string> = {
       'typescript': 'typescript',
       'javascript': 'javascript',
       'html': 'markup',
-      'dockerfile': 'docker',
+      'css': 'css',
+      'json': 'json',
+      'markdown': 'markdown',
+      'python': 'python',
+      'java': 'java',
+      'go': 'go',
+      'rust': 'rust',
+      'c': 'c',
+      'cpp': 'cpp',
       'csharp': 'csharp',
+      'php': 'php',
+      'ruby': 'ruby',
+      'swift': 'swift',
+      'kotlin': 'kotlin',
+      'scala': 'scala',
+      'yaml': 'yaml',
+      'toml': 'toml',
+      'sql': 'sql',
+      'bash': 'bash',
+      'dockerfile': 'docker',
+      'makefile': 'makefile',
       'plaintext': 'plaintext',
     };
     return mapping[lang] || lang;
@@ -236,6 +268,13 @@ export class DiffPanel {
       // Fallback to plain text on error
       return code.split('\n').map(line => escapeHtml(line));
     }
+  }
+
+  private renderTruncationMessage(remainingLines: number): string {
+    return `<div class="diff-line-wrapper hunk">
+          <span class="line-numbers"><span class="line-number old"></span><span class="line-number new"></span></span>
+          <div class="diff-line hunk">... Truncated (${remainingLines} more lines). Open file to view full content.</div>
+        </div>`;
   }
 
   private getLoadingHtml(repoName: string): string {
@@ -307,7 +346,7 @@ export class DiffPanel {
           this.activePanel.webview.postMessage({ command: 'show' });
           this.isLoading = false;
         }
-      }, 1000);
+      }, READY_FALLBACK_TIMEOUT_MS);
     } catch (error) {
       console.error('Error generating webview content:', error);
       panel.webview.html = `<html><body><h1>Error</h1><pre>${escapeHtml(String(error))}</pre></body></html>`;
@@ -1099,10 +1138,7 @@ export class DiffPanel {
     const badgeText = type === 'branch' ? '' : type;
 
     const truncationMessage = isTruncated
-      ? `<div class="diff-line-wrapper hunk">
-          <span class="line-numbers"><span class="line-number old"></span><span class="line-number new"></span></span>
-          <div class="diff-line hunk">... Diff truncated (${allLines.length - MAX_DIFF_LINES} more lines). Open file to view full content.</div>
-        </div>`
+      ? this.renderTruncationMessage(allLines.length - MAX_DIFF_LINES)
       : '';
 
     return `
@@ -1116,7 +1152,7 @@ export class DiffPanel {
       ${badgeText ? `<span class="file-badge ${badgeClass}">${badgeText}</span>` : ''}
       <span class="stat additions">+${file.additions}</span>
       <span class="stat deletions">-${file.deletions}</span>
-      <button onclick="event.stopPropagation(); openFile('${escapeHtml(fullPath)}')">Open</button>
+      <button onclick="event.stopPropagation(); openFile('${escapeJsString(fullPath)}')">Open</button>
     </div>
   </div>
   <div class="diff-content">
@@ -1154,10 +1190,7 @@ export class DiffPanel {
     });
 
     const truncationMessage = isTruncated
-      ? `<div class="diff-line-wrapper hunk">
-          <span class="line-numbers"><span class="line-number old"></span><span class="line-number new"></span></span>
-          <div class="diff-line hunk">... File truncated (${allContentLines.length - MAX_DIFF_LINES} more lines). Open file to view full content.</div>
-        </div>`
+      ? this.renderTruncationMessage(allContentLines.length - MAX_DIFF_LINES)
       : '';
 
     return `
@@ -1170,7 +1203,7 @@ export class DiffPanel {
     <div class="file-stats">
       <span class="file-badge untracked">new</span>
       <span class="stat additions">+${file.additions}</span>
-      <button onclick="event.stopPropagation(); openFile('${escapeHtml(fullPath)}')">Open</button>
+      <button onclick="event.stopPropagation(); openFile('${escapeJsString(fullPath)}')">Open</button>
     </div>
   </div>
   <div class="diff-content">
