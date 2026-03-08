@@ -31,10 +31,36 @@ interface DiffData {
   hasRemote: boolean;
 }
 
+interface DiffPanelSettings {
+  zoomLevel: number;      // 70, 75, 80, 85, 90, 95, 100, 105, 110, 115, 120
+  themeOverride: 'auto' | 'light' | 'dark';
+}
+
+const DEFAULT_SETTINGS: DiffPanelSettings = {
+  zoomLevel: 100,
+  themeOverride: 'auto',
+};
+
+const DIFF_PANEL_SETTINGS_KEY = 'code-review.diffPanelSettings';
+
 export class DiffPanel {
   private activePanel: vscode.WebviewPanel | undefined;
   private currentRepo: DetectedRepo | undefined;
   private scrollPositions: Map<string, number> = new Map();
+  private settings: DiffPanelSettings = DEFAULT_SETTINGS;
+  private context: vscode.ExtensionContext;
+
+  constructor(context: vscode.ExtensionContext) {
+    this.context = context;
+    this.loadSettings();
+  }
+
+  private loadSettings(): void {
+    const saved = this.context.workspaceState.get<DiffPanelSettings>(DIFF_PANEL_SETTINGS_KEY);
+    if (saved) {
+      this.settings = { ...DEFAULT_SETTINGS, ...saved };
+    }
+  }
 
   async showDiff(
     repo: DetectedRepo,
@@ -91,6 +117,9 @@ export class DiffPanel {
         if (this.currentRepo) {
           this.scrollPositions.set(this.currentRepo.path, message.scrollTop);
         }
+      } else if (message.command === 'updateSettings') {
+        this.settings = { ...this.settings, ...message.settings };
+        await this.context.workspaceState.update(DIFF_PANEL_SETTINGS_KEY, this.settings);
       }
     });
 
@@ -182,7 +211,7 @@ export class DiffPanel {
         hasRemote,
       };
 
-      const html = this.getWebviewContent(repo, diffData);
+      const html = this.getWebviewContent(repo, diffData, this.settings);
       panel.webview.html = html;
 
       // Restore scroll position for this repo if available
@@ -201,7 +230,7 @@ export class DiffPanel {
     }
   }
 
-  private getWebviewContent(repo: DetectedRepo, data: DiffData): string {
+  private getWebviewContent(repo: DetectedRepo, data: DiffData, settings: DiffPanelSettings): string {
     const hasUncommittedChanges =
       data.staged.length > 0 ||
       data.unstaged.length > 0 ||
@@ -210,8 +239,9 @@ export class DiffPanel {
     const totalUncommittedFiles =
       data.staged.length + data.unstaged.length + data.untracked.length;
 
-    const theme = this.getCurrentTheme();
-    const themeClass = theme === 'light' ? 'light-theme' : 'dark-theme';
+    const autoTheme = this.getCurrentTheme();
+    const effectiveTheme = settings.themeOverride === 'auto' ? autoTheme : settings.themeOverride;
+    const themeClass = effectiveTheme === 'light' ? 'light-theme' : 'dark-theme';
 
     const stagedHtml = data.staged.map((file) => this.renderFileDiff(file, repo.path, 'staged')).join('');
     const unstagedHtml = data.unstaged.map((file) => this.renderFileDiff(file, repo.path, 'unstaged')).join('');
@@ -590,9 +620,83 @@ export class DiffPanel {
 
     .dark-theme .diff-line .token.regex,
     .dark-theme .diff-line .token.important { color: #ffa657 !important; }
+
+    /* Settings Menu */
+    .settings-btn {
+      background: transparent;
+      border: none;
+      color: var(--text-color);
+      cursor: pointer;
+      padding: 6px;
+      border-radius: 4px;
+      display: flex;
+      align-items: center;
+    }
+    .settings-btn:hover {
+      background: var(--vscode-toolbar-hoverBackground, rgba(90, 93, 94, 0.31));
+    }
+
+    .settings-menu {
+      position: absolute;
+      top: 100%;
+      right: 0;
+      margin-top: 4px;
+      background: var(--vscode-menu-background, var(--header-bg));
+      border: 1px solid var(--vscode-menu-border, var(--border-color));
+      border-radius: 4px;
+      box-shadow: 0 2px 8px rgba(0, 0, 0, 0.2);
+      min-width: 180px;
+      z-index: 100;
+      display: none;
+    }
+    .settings-menu.open { display: block; }
+
+    .settings-section {
+      padding: 8px 12px;
+      border-bottom: 1px solid var(--border-color);
+    }
+    .settings-section:last-child { border-bottom: none; }
+
+    .settings-label {
+      font-size: 0.85em;
+      color: var(--vscode-descriptionForeground);
+      margin-bottom: 6px;
+    }
+
+    .settings-options { display: flex; flex-wrap: wrap; gap: 4px; }
+
+    .settings-option {
+      padding: 4px 8px;
+      background: var(--vscode-button-secondaryBackground, rgba(90, 93, 94, 0.4));
+      color: var(--vscode-button-secondaryForeground, var(--text-color));
+      border: 1px solid transparent;
+      border-radius: 3px;
+      cursor: pointer;
+      font-size: 12px;
+    }
+    .settings-option:hover {
+      background: var(--vscode-button-secondaryHoverBackground, rgba(90, 93, 94, 0.6));
+    }
+    .settings-option.active {
+      background: var(--vscode-button-background);
+      color: var(--vscode-button-foreground);
+    }
+
+    /* Zoom Scaling (70% - 120% in 5% increments) */
+    .zoom-70 .diff-content, .zoom-70 .line-number, .zoom-70 .file-name { font-size: calc(var(--vscode-editor-font-size, 13px) * 0.7); }
+    .zoom-75 .diff-content, .zoom-75 .line-number, .zoom-75 .file-name { font-size: calc(var(--vscode-editor-font-size, 13px) * 0.75); }
+    .zoom-80 .diff-content, .zoom-80 .line-number, .zoom-80 .file-name { font-size: calc(var(--vscode-editor-font-size, 13px) * 0.8); }
+    .zoom-85 .diff-content, .zoom-85 .line-number, .zoom-85 .file-name { font-size: calc(var(--vscode-editor-font-size, 13px) * 0.85); }
+    .zoom-90 .diff-content, .zoom-90 .line-number, .zoom-90 .file-name { font-size: calc(var(--vscode-editor-font-size, 13px) * 0.9); }
+    .zoom-95 .diff-content, .zoom-95 .line-number, .zoom-95 .file-name { font-size: calc(var(--vscode-editor-font-size, 13px) * 0.95); }
+    .zoom-100 .diff-content, .zoom-100 .line-number, .zoom-100 .file-name { font-size: var(--vscode-editor-font-size, 13px); }
+    .zoom-105 .diff-content, .zoom-105 .line-number, .zoom-105 .file-name { font-size: calc(var(--vscode-editor-font-size, 13px) * 1.05); }
+    .zoom-110 .diff-content, .zoom-110 .line-number, .zoom-110 .file-name { font-size: calc(var(--vscode-editor-font-size, 13px) * 1.1); }
+    .zoom-115 .diff-content, .zoom-115 .line-number, .zoom-115 .file-name { font-size: calc(var(--vscode-editor-font-size, 13px) * 1.15); }
+    .zoom-120 .diff-content, .zoom-120 .line-number, .zoom-120 .file-name { font-size: calc(var(--vscode-editor-font-size, 13px) * 1.2); }
   </style>
 </head>
-<body class="${themeClass}">
+<body class="${themeClass} zoom-${settings.zoomLevel}">
   <div class="header">
     <div>
       <h1>${escapeHtml(repo.name)}</h1>
@@ -600,6 +704,39 @@ export class DiffPanel {
     </div>
     <div class="actions">
       <button class="btn" onclick="refresh()">Refresh</button>
+      <div class="settings-container" style="position: relative;">
+        <button class="settings-btn" onclick="toggleSettingsMenu(event)" title="Settings">
+          <svg width="16" height="16" viewBox="0 0 16 16" fill="currentColor">
+            <path d="M9.1 4.4L8.6 2H7.4l-.5 2.4-.7.3-2-1.3-.9.8 1.3 2-.2.7-2.4.5v1.2l2.4.5.3.8-1.3 2 .8.8 2-1.3.8.3.4 2.3h1.2l.5-2.4.8-.3 2 1.3.8-.8-1.3-2 .3-.8 2.3-.4V7.4l-2.4-.5-.3-.8 1.3-2-.8-.8-2 1.3-.7-.2zM9.4 1l.5 2.4L12 2.1l2 2-1.4 2.1 2.4.4v2.8l-2.4.5L14 12l-2 2-2.1-1.4-.5 2.4H6.6l-.5-2.4L4 13.9l-2-2 1.4-2.1L1 9.4V6.6l2.4-.5L2.1 4l2-2 2.1 1.4.4-2.4h2.8zm.6 7c0 1.1-.9 2-2 2s-2-.9-2-2 .9-2 2-2 2 .9 2 2zM8 9c.6 0 1-.4 1-1s-.4-1-1-1-1 .4-1 1 .4 1 1 1z"/>
+          </svg>
+        </button>
+        <div class="settings-menu" id="settingsMenu">
+          <div class="settings-section">
+            <div class="settings-label">Zoom Level</div>
+            <div class="settings-options">
+              <button class="settings-option" onclick="setZoom(70)">70%</button>
+              <button class="settings-option" onclick="setZoom(75)">75%</button>
+              <button class="settings-option" onclick="setZoom(80)">80%</button>
+              <button class="settings-option" onclick="setZoom(85)">85%</button>
+              <button class="settings-option" onclick="setZoom(90)">90%</button>
+              <button class="settings-option" onclick="setZoom(95)">95%</button>
+              <button class="settings-option" onclick="setZoom(100)">100%</button>
+              <button class="settings-option" onclick="setZoom(105)">105%</button>
+              <button class="settings-option" onclick="setZoom(110)">110%</button>
+              <button class="settings-option" onclick="setZoom(115)">115%</button>
+              <button class="settings-option" onclick="setZoom(120)">120%</button>
+            </div>
+          </div>
+          <div class="settings-section">
+            <div class="settings-label">Syntax Theme</div>
+            <div class="settings-options">
+              <button class="settings-option" onclick="setTheme('auto')">Auto</button>
+              <button class="settings-option" onclick="setTheme('light')">Light</button>
+              <button class="settings-option" onclick="setTheme('dark')">Dark</button>
+            </div>
+          </div>
+        </div>
+      </div>
     </div>
   </div>
 
@@ -685,6 +822,8 @@ export class DiffPanel {
 
   <script>
     const vscode = acquireVsCodeApi();
+    let currentSettings = { zoomLevel: ${settings.zoomLevel}, themeOverride: '${settings.themeOverride}' };
+    const autoTheme = '${autoTheme}';
 
     function refresh() {
       vscode.postMessage({ command: 'refresh' });
@@ -707,6 +846,43 @@ export class DiffPanel {
     function push() {
       vscode.postMessage({ command: 'push' });
     }
+
+    function toggleSettingsMenu(event) {
+      event.stopPropagation();
+      document.getElementById('settingsMenu').classList.toggle('open');
+    }
+
+    function setZoom(level) {
+      currentSettings.zoomLevel = level;
+      document.body.className = document.body.className.replace(/zoom-\\d+/g, 'zoom-' + level);
+      updateSettingsUI();
+      vscode.postMessage({ command: 'updateSettings', settings: currentSettings });
+    }
+
+    function setTheme(theme) {
+      currentSettings.themeOverride = theme;
+      document.body.classList.remove('light-theme', 'dark-theme');
+      document.body.classList.add(theme === 'auto' ? autoTheme : theme + '-theme');
+      updateSettingsUI();
+      vscode.postMessage({ command: 'updateSettings', settings: currentSettings });
+    }
+
+    function updateSettingsUI() {
+      document.querySelectorAll('.settings-option').forEach(btn => {
+        btn.classList.remove('active');
+      });
+      document.querySelector('.settings-option[onclick="setZoom(' + currentSettings.zoomLevel + ')"]')?.classList.add('active');
+      document.querySelector('.settings-option[onclick="setTheme(\\'' + currentSettings.themeOverride + '\\')"]')?.classList.add('active');
+    }
+
+    document.addEventListener('click', (e) => {
+      if (!e.target.closest('.settings-container')) {
+        document.getElementById('settingsMenu').classList.remove('open');
+      }
+    });
+
+    // Initialize active states
+    updateSettingsUI();
 
     // Track scroll position continuously (debounced)
     let scrollTimeout;

@@ -10,7 +10,7 @@ let diffPanel: DiffPanel;
 export function activate(context: vscode.ExtensionContext) {
   // Initialize panels
   consolePanel = new ConsolePanel();
-  diffPanel = new DiffPanel();
+  diffPanel = new DiffPanel(context);
 
   // Initialize tree provider
   const repoTreeProvider = new RepoTreeProvider(context);
