@@ -51,6 +51,7 @@ export class DiffPanel {
   private context: vscode.ExtensionContext;
   private fileWatcher: vscode.FileSystemWatcher | undefined;
   private refreshTimeout: NodeJS.Timeout | undefined;
+  private isLoading: boolean = false;
 
   constructor(context: vscode.ExtensionContext) {
     this.context = context;
@@ -104,16 +105,22 @@ export class DiffPanel {
     repo: DetectedRepo,
     viewColumn: vscode.ViewColumn = vscode.ViewColumn.One
   ): Promise<void> {
-    // Update current repo reference
-    this.currentRepo = repo;
-
-    // Setup file watcher for auto-refresh
+    // Setup file watcher for auto-refresh (uses repo.path directly, not this.currentRepo)
     this.setupFileWatcher(repo.path);
 
     if (this.activePanel) {
-      // Reuse existing panel - update title and content
+      // FIRST: Set loading state and HTML to destroy old webview JavaScript
+      // This prevents stale scroll events from being associated with the wrong repo
+      this.isLoading = true;
+      this.activePanel.webview.html = this.getLoadingHtml(repo.name);
+
+      // THEN: Update current repo reference (no more stale messages possible)
+      this.currentRepo = repo;
+
+      // Update title and reveal
       this.activePanel.title = `Diff: ${repo.name}`;
       this.activePanel.reveal(viewColumn);
+
       try {
         await this.updatePanelContent(this.activePanel, repo);
       } catch (error) {
@@ -121,6 +128,9 @@ export class DiffPanel {
       }
       return;
     }
+
+    // For new panel creation, update repo reference before creating
+    this.currentRepo = repo;
 
     // Create new panel
     this.activePanel = vscode.window.createWebviewPanel(
@@ -156,7 +166,8 @@ export class DiffPanel {
         await this.pushChanges(this.currentRepo);
         await this.updatePanelContent(this.activePanel, this.currentRepo);
       } else if (message.command === 'saveScrollPosition') {
-        if (this.currentRepo) {
+        // Only save scroll position if not in loading state (prevents race condition during repo switch)
+        if (this.currentRepo && !this.isLoading) {
           this.scrollPositions.set(this.currentRepo.path, message.scrollTop);
         }
       } else if (message.command === 'updateSettings') {
@@ -225,6 +236,34 @@ export class DiffPanel {
     }
   }
 
+  private getLoadingHtml(repoName: string): string {
+    return `<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <style>
+    body {
+      font-family: var(--vscode-font-family);
+      color: var(--vscode-editor-foreground);
+      background-color: var(--vscode-editor-background);
+      display: flex;
+      justify-content: center;
+      align-items: center;
+      height: 100vh;
+      margin: 0;
+    }
+    .loading {
+      text-align: center;
+      color: var(--vscode-descriptionForeground);
+    }
+  </style>
+</head>
+<body>
+  <div class="loading">Loading ${escapeHtml(repoName)}...</div>
+</body>
+</html>`;
+  }
+
   private async updatePanelContent(
     panel: vscode.WebviewPanel,
     repo: DetectedRepo
@@ -255,6 +294,7 @@ export class DiffPanel {
 
       const html = this.getWebviewContent(repo, diffData, this.settings);
       panel.webview.html = html;
+      this.isLoading = false;
 
       // Restore scroll position for this repo if available
       const savedScrollTop = this.scrollPositions.get(repo.path);
@@ -269,6 +309,7 @@ export class DiffPanel {
     } catch (error) {
       console.error('Error generating webview content:', error);
       panel.webview.html = `<html><body><h1>Error</h1><pre>${escapeHtml(String(error))}</pre></body></html>`;
+      this.isLoading = false;
     }
   }
 
@@ -928,7 +969,11 @@ export class DiffPanel {
 
     // Track scroll position continuously (debounced)
     let scrollTimeout;
+    let isRestoring = false;
+
     window.addEventListener('scroll', () => {
+      if (isRestoring) return;  // Skip saving during restoration
+
       clearTimeout(scrollTimeout);
       scrollTimeout = setTimeout(() => {
         vscode.postMessage({
@@ -942,7 +987,12 @@ export class DiffPanel {
     window.addEventListener('message', event => {
       const message = event.data;
       if (message.command === 'restoreScrollPosition') {
+        isRestoring = true;
         window.scrollTo(0, message.scrollTop);
+        // Clear flag after a short delay to allow scroll events to settle
+        setTimeout(() => {
+          isRestoring = false;
+        }, 50);
       }
     });
   </script>
