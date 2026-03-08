@@ -34,6 +34,7 @@ interface DiffData {
 export class DiffPanel {
   private activePanel: vscode.WebviewPanel | undefined;
   private currentRepo: DetectedRepo | undefined;
+  private scrollPositions: Map<string, number> = new Map();
 
   async showDiff(
     repo: DetectedRepo,
@@ -86,6 +87,10 @@ export class DiffPanel {
       } else if (message.command === 'push') {
         await this.pushChanges(this.currentRepo);
         await this.updatePanelContent(this.activePanel, this.currentRepo);
+      } else if (message.command === 'saveScrollPosition') {
+        if (this.currentRepo) {
+          this.scrollPositions.set(this.currentRepo.path, message.scrollTop);
+        }
       }
     });
 
@@ -179,6 +184,17 @@ export class DiffPanel {
 
       const html = this.getWebviewContent(repo, diffData);
       panel.webview.html = html;
+
+      // Restore scroll position for this repo if available
+      const savedScrollTop = this.scrollPositions.get(repo.path);
+      if (savedScrollTop !== undefined && savedScrollTop > 0) {
+        setTimeout(() => {
+          panel.webview.postMessage({
+            command: 'restoreScrollPosition',
+            scrollTop: savedScrollTop
+          });
+        }, 100);
+      }
     } catch (error) {
       console.error('Error generating webview content:', error);
       panel.webview.html = `<html><body><h1>Error</h1><pre>${escapeHtml(String(error))}</pre></body></html>`;
@@ -691,6 +707,26 @@ export class DiffPanel {
     function push() {
       vscode.postMessage({ command: 'push' });
     }
+
+    // Track scroll position continuously (debounced)
+    let scrollTimeout;
+    window.addEventListener('scroll', () => {
+      clearTimeout(scrollTimeout);
+      scrollTimeout = setTimeout(() => {
+        vscode.postMessage({
+          command: 'saveScrollPosition',
+          scrollTop: window.scrollY
+        });
+      }, 100);
+    });
+
+    // Handle restore message from extension
+    window.addEventListener('message', event => {
+      const message = event.data;
+      if (message.command === 'restoreScrollPosition') {
+        window.scrollTo(0, message.scrollTop);
+      }
+    });
   </script>
 </body>
 </html>`;

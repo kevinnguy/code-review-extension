@@ -22,8 +22,9 @@ export class ConsolePanel {
     };
 
     if (inEditorArea) {
-      (terminalOptions as vscode.TerminalOptions & { location: vscode.TerminalLocation }).location =
-        vscode.TerminalLocation.Editor;
+      (terminalOptions as vscode.TerminalOptions & { location: vscode.TerminalEditorLocationOptions }).location = {
+        viewColumn: vscode.ViewColumn.One,
+      };
     }
 
     const terminal = vscode.window.createTerminal(terminalOptions);
