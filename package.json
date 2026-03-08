@@ -110,6 +110,7 @@
     "typescript": "^5.3.0"
   },
   "dependencies": {
+    "shiki": "^1.0.0",
     "simple-git": "^3.21.0"
   }
 }

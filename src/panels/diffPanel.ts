@@ -1,4 +1,5 @@
 import * as vscode from 'vscode';
+import { createHighlighter, Highlighter } from 'shiki';
 import { DetectedRepo } from '../utils/repoDetector';
 import { gitService, DiffFile, CommitInfo } from '../services/gitService';
 
@@ -16,6 +17,8 @@ interface DiffData {
 export class DiffPanel {
   private activePanel: vscode.WebviewPanel | undefined;
   private currentRepo: DetectedRepo | undefined;
+  private highlighter: Highlighter | undefined;
+  private loadedLangs: Set<string> = new Set();
 
   async showDiff(
     repo: DetectedRepo,
@@ -88,6 +91,129 @@ export class DiffPanel {
     }
   }
 
+  private getCurrentTheme(): 'github-light' | 'github-dark' {
+    const themeKind = vscode.window.activeColorTheme.kind;
+    return themeKind === vscode.ColorThemeKind.Light ? 'github-light' : 'github-dark';
+  }
+
+  private async getHighlighter(): Promise<Highlighter> {
+    if (!this.highlighter) {
+      this.highlighter = await createHighlighter({
+        themes: ['github-light', 'github-dark'],
+        langs: [], // Start empty, load languages on demand
+      });
+    }
+    return this.highlighter;
+  }
+
+  private async ensureLanguageLoaded(lang: string): Promise<void> {
+    if (!this.highlighter || this.loadedLangs.has(lang)) {
+      return;
+    }
+    try {
+      await this.highlighter.loadLanguage(lang as Parameters<typeof this.highlighter.loadLanguage>[0]);
+      this.loadedLangs.add(lang);
+    } catch {
+      // Language not supported, will fall back to plaintext
+    }
+  }
+
+  private getLanguageFromFile(filename: string): string {
+    const ext = filename.split('.').pop()?.toLowerCase() || '';
+    const langMap: Record<string, string> = {
+      'ts': 'typescript',
+      'tsx': 'typescript',
+      'js': 'javascript',
+      'jsx': 'javascript',
+      'mjs': 'javascript',
+      'cjs': 'javascript',
+      'json': 'json',
+      'css': 'css',
+      'scss': 'css',
+      'less': 'css',
+      'html': 'html',
+      'htm': 'html',
+      'md': 'markdown',
+      'markdown': 'markdown',
+      'py': 'python',
+      'java': 'java',
+      'go': 'go',
+      'rs': 'rust',
+      'c': 'c',
+      'h': 'c',
+      'cpp': 'cpp',
+      'cc': 'cpp',
+      'cxx': 'cpp',
+      'hpp': 'cpp',
+      'cs': 'csharp',
+      'php': 'php',
+      'rb': 'ruby',
+      'swift': 'swift',
+      'kt': 'kotlin',
+      'kts': 'kotlin',
+      'scala': 'scala',
+      'yml': 'yaml',
+      'yaml': 'yaml',
+      'toml': 'toml',
+      'xml': 'xml',
+      'sql': 'sql',
+      'sh': 'bash',
+      'bash': 'bash',
+      'zsh': 'bash',
+      'dockerfile': 'dockerfile',
+      'makefile': 'makefile',
+    };
+
+    // Check for special filenames
+    const basename = filename.split('/').pop()?.toLowerCase() || '';
+    if (basename === 'dockerfile') return 'dockerfile';
+    if (basename === 'makefile') return 'makefile';
+
+    return langMap[ext] || 'plaintext';
+  }
+
+  private async highlightCode(code: string, lang: string, highlighter: Highlighter): Promise<string[]> {
+    // Ensure the language is loaded
+    await this.ensureLanguageLoaded(lang);
+
+    const theme = this.getCurrentTheme();
+    const effectiveLang = this.loadedLangs.has(lang) ? lang : 'plaintext';
+
+    try {
+      // Highlight entire code block at once
+      const html = highlighter.codeToHtml(code, { lang: effectiveLang, theme });
+
+      // Extract the code content from <code>...</code>
+      const codeMatch = html.match(/<code>([\s\S]*?)<\/code>/);
+      if (!codeMatch) {
+        // Fallback: escape each line
+        return code.split('\n').map(line => this.escapeHtml(line));
+      }
+
+      const codeContent = codeMatch[1];
+
+      // Shiki wraps each line in <span class="line">...</span>
+      // Split by line spans to get individual highlighted lines
+      const lineRegex = /<span class="line">([\s\S]*?)<\/span>/g;
+      const lines: string[] = [];
+      let match;
+
+      while ((match = lineRegex.exec(codeContent)) !== null) {
+        lines.push(match[1]);
+      }
+
+      // If no line spans found (shouldn't happen), fall back to splitting
+      if (lines.length === 0) {
+        return code.split('\n').map(line => this.escapeHtml(line));
+      }
+
+      return lines;
+    } catch {
+      // Fallback: escape each line
+      return code.split('\n').map(line => this.escapeHtml(line));
+    }
+  }
+
   private async updatePanelContent(
     panel: vscode.WebviewPanel,
     repo: DetectedRepo
@@ -115,10 +241,10 @@ export class DiffPanel {
       hasRemote,
     };
 
-    panel.webview.html = this.getWebviewContent(repo, diffData);
+    panel.webview.html = await this.getWebviewContent(repo, diffData);
   }
 
-  private getWebviewContent(repo: DetectedRepo, data: DiffData): string {
+  private async getWebviewContent(repo: DetectedRepo, data: DiffData): Promise<string> {
     const hasUncommittedChanges =
       data.staged.length > 0 ||
       data.unstaged.length > 0 ||
@@ -127,21 +253,24 @@ export class DiffPanel {
     const totalUncommittedFiles =
       data.staged.length + data.unstaged.length + data.untracked.length;
 
-    const stagedHtml = data.staged
-      .map((file) => this.renderFileDiff(file, repo.path, 'staged'))
-      .join('');
+    // Get the highlighter once for all files
+    const highlighter = await this.getHighlighter();
 
-    const unstagedHtml = data.unstaged
-      .map((file) => this.renderFileDiff(file, repo.path, 'unstaged'))
-      .join('');
+    const stagedHtml = (await Promise.all(
+      data.staged.map((file) => this.renderFileDiff(file, repo.path, 'staged', highlighter))
+    )).join('');
 
-    const untrackedHtml = data.untracked
-      .map((file) => this.renderUntrackedFile(file, repo.path))
-      .join('');
+    const unstagedHtml = (await Promise.all(
+      data.unstaged.map((file) => this.renderFileDiff(file, repo.path, 'unstaged', highlighter))
+    )).join('');
 
-    const branchDiffHtml = data.branchDiff
-      .map((file) => this.renderFileDiff(file, repo.path, 'branch'))
-      .join('');
+    const untrackedHtml = (await Promise.all(
+      data.untracked.map((file) => this.renderUntrackedFile(file, repo.path, highlighter))
+    )).join('');
+
+    const branchDiffHtml = (await Promise.all(
+      data.branchDiff.map((file) => this.renderFileDiff(file, repo.path, 'branch', highlighter))
+    )).join('');
 
     const totalBranchAdditions = data.branchDiff.reduce(
       (sum, f) => sum + f.additions,
@@ -333,7 +462,19 @@ export class DiffPanel {
     .diff-line.addition { background: var(--addition-bg); }
     .diff-line.deletion { background: var(--deletion-bg); }
     .diff-line.hunk { background: var(--hunk-bg); color: var(--vscode-descriptionForeground); padding: 4px 12px; }
-    .diff-line.context { color: var(--vscode-descriptionForeground); }
+    .diff-line.context { }
+
+    /* Diff marker styling */
+    .diff-marker {
+      display: inline-block;
+      width: 1ch;
+      user-select: none;
+    }
+
+    /* Shiki syntax highlighting overrides */
+    .diff-line span.line { display: inline; }
+    .diff-line code { background: transparent !important; }
+    .diff-line pre { margin: 0; background: transparent !important; }
 
     .diff-line-wrapper.addition .line-numbers { background: var(--addition-bg); }
     .diff-line-wrapper.deletion .line-numbers { background: var(--deletion-bg); }
@@ -553,56 +694,92 @@ export class DiffPanel {
 </html>`;
   }
 
-  private renderFileDiff(
+  private async renderFileDiff(
     file: DiffFile,
     repoPath: string,
-    type: 'staged' | 'unstaged' | 'branch'
-  ): string {
+    type: 'staged' | 'unstaged' | 'branch',
+    highlighter: Highlighter
+  ): Promise<string> {
     const fullPath = `${repoPath}/${file.file}`;
     const lines = file.diff.split('\n');
+    const lang = this.getLanguageFromFile(file.file);
+
+    // First pass: synchronously compute line metadata
+    interface LineMeta {
+      type: 'hunk' | 'addition' | 'deletion' | 'context';
+      oldLine: number | null;
+      newLine: number | null;
+      code: string;
+      rawLine: string;
+    }
 
     let oldLineNum = 0;
     let newLineNum = 0;
+    const linesMeta: LineMeta[] = [];
+    const codeLines: string[] = [];
 
-    const diffLines = lines
-      .slice(4)
-      .map((line) => {
-        if (line.startsWith('@@')) {
-          // Parse hunk header: @@ -old,count +new,count @@
-          const match = line.match(/@@ -(\d+)(?:,\d+)? \+(\d+)(?:,\d+)? @@/);
-          if (match) {
-            oldLineNum = parseInt(match[1], 10);
-            newLineNum = parseInt(match[2], 10);
-          }
-          return `<div class="diff-line-wrapper hunk">
-            <span class="line-numbers"><span class="line-number old"></span><span class="line-number new"></span></span>
-            <div class="diff-line hunk">${this.escapeHtml(line)}</div>
-          </div>`;
-        } else if (line.startsWith('+')) {
-          const lineHtml = `<div class="diff-line-wrapper addition">
-            <span class="line-numbers"><span class="line-number old"></span><span class="line-number new">${newLineNum}</span></span>
-            <div class="diff-line addition">${this.escapeHtml(line)}</div>
-          </div>`;
-          newLineNum++;
-          return lineHtml;
-        } else if (line.startsWith('-')) {
-          const lineHtml = `<div class="diff-line-wrapper deletion">
-            <span class="line-numbers"><span class="line-number old">${oldLineNum}</span><span class="line-number new"></span></span>
-            <div class="diff-line deletion">${this.escapeHtml(line)}</div>
-          </div>`;
-          oldLineNum++;
-          return lineHtml;
-        } else {
-          const lineHtml = `<div class="diff-line-wrapper context">
-            <span class="line-numbers"><span class="line-number old">${oldLineNum}</span><span class="line-number new">${newLineNum}</span></span>
-            <div class="diff-line context">${this.escapeHtml(line)}</div>
-          </div>`;
-          oldLineNum++;
-          newLineNum++;
-          return lineHtml;
+    for (const line of lines.slice(4)) {
+      if (line.startsWith('@@')) {
+        // Parse hunk header: @@ -old,count +new,count @@
+        const match = line.match(/@@ -(\d+)(?:,\d+)? \+(\d+)(?:,\d+)? @@/);
+        if (match) {
+          oldLineNum = parseInt(match[1], 10);
+          newLineNum = parseInt(match[2], 10);
         }
-      })
-      .join('');
+        linesMeta.push({ type: 'hunk', oldLine: null, newLine: null, code: '', rawLine: line });
+      } else if (line.startsWith('+')) {
+        const code = line.substring(1);
+        linesMeta.push({ type: 'addition', oldLine: null, newLine: newLineNum, code, rawLine: line });
+        codeLines.push(code);
+        newLineNum++;
+      } else if (line.startsWith('-')) {
+        const code = line.substring(1);
+        linesMeta.push({ type: 'deletion', oldLine: oldLineNum, newLine: null, code, rawLine: line });
+        codeLines.push(code);
+        oldLineNum++;
+      } else {
+        const code = line.startsWith(' ') ? line.substring(1) : line;
+        linesMeta.push({ type: 'context', oldLine: oldLineNum, newLine: newLineNum, code, rawLine: line });
+        codeLines.push(code);
+        oldLineNum++;
+        newLineNum++;
+      }
+    }
+
+    // Second pass: highlight all code lines in batch
+    const highlightedLines = codeLines.length > 0
+      ? await this.highlightCode(codeLines.join('\n'), lang, highlighter)
+      : [];
+
+    // Third pass: combine metadata with highlighted output
+    let codeIndex = 0;
+    const diffLines = linesMeta.map((meta) => {
+      if (meta.type === 'hunk') {
+        return `<div class="diff-line-wrapper hunk">
+          <span class="line-numbers"><span class="line-number old"></span><span class="line-number new"></span></span>
+          <div class="diff-line hunk">${this.escapeHtml(meta.rawLine)}</div>
+        </div>`;
+      }
+
+      const highlighted = highlightedLines[codeIndex++] || this.escapeHtml(meta.code);
+
+      if (meta.type === 'addition') {
+        return `<div class="diff-line-wrapper addition">
+          <span class="line-numbers"><span class="line-number old"></span><span class="line-number new">${meta.newLine}</span></span>
+          <div class="diff-line addition"><span class="diff-marker">+</span>${highlighted}</div>
+        </div>`;
+      } else if (meta.type === 'deletion') {
+        return `<div class="diff-line-wrapper deletion">
+          <span class="line-numbers"><span class="line-number old">${meta.oldLine}</span><span class="line-number new"></span></span>
+          <div class="diff-line deletion"><span class="diff-marker">-</span>${highlighted}</div>
+        </div>`;
+      } else {
+        return `<div class="diff-line-wrapper context">
+          <span class="line-numbers"><span class="line-number old">${meta.oldLine}</span><span class="line-number new">${meta.newLine}</span></span>
+          <div class="diff-line context"><span class="diff-marker"> </span>${highlighted}</div>
+        </div>`;
+      }
+    });
 
     const badgeClass = type;
     const badgeText = type === 'branch' ? '' : type;
@@ -622,25 +799,27 @@ export class DiffPanel {
     </div>
   </div>
   <div class="diff-content">
-    ${diffLines}
+    ${diffLines.join('')}
   </div>
 </div>`;
   }
 
-  private renderUntrackedFile(file: DiffFile, repoPath: string): string {
+  private async renderUntrackedFile(file: DiffFile, repoPath: string, highlighter: Highlighter): Promise<string> {
     const fullPath = `${repoPath}/${file.file}`;
-    let lineNum = 1;
-    const lines = file.diff
-      .split('\n')
-      .map((line) => {
-        const lineHtml = `<div class="diff-line-wrapper addition">
-          <span class="line-numbers"><span class="line-number old"></span><span class="line-number new">${lineNum}</span></span>
-          <div class="diff-line addition">+${this.escapeHtml(line)}</div>
-        </div>`;
-        lineNum++;
-        return lineHtml;
-      })
-      .join('');
+    const lang = this.getLanguageFromFile(file.file);
+    const fileContent = file.diff;
+
+    // Highlight entire file content at once
+    const highlightedLines = await this.highlightCode(fileContent, lang, highlighter);
+
+    // Build HTML for each line with pre-computed line numbers
+    const lines = highlightedLines.map((highlighted, index) => {
+      const lineNum = index + 1;
+      return `<div class="diff-line-wrapper addition">
+        <span class="line-numbers"><span class="line-number old"></span><span class="line-number new">${lineNum}</span></span>
+        <div class="diff-line addition"><span class="diff-marker">+</span>${highlighted}</div>
+      </div>`;
+    });
 
     return `
 <div class="file">
@@ -656,7 +835,7 @@ export class DiffPanel {
     </div>
   </div>
   <div class="diff-content">
-    ${lines}
+    ${lines.join('')}
   </div>
 </div>`;
   }
