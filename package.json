@@ -1,0 +1,115 @@
+{
+  "name": "code-review",
+  "displayName": "Code Review",
+  "publisher": "local",
+  "description": "A VS Code extension for code review with repository management, console, and diff viewing",
+  "version": "0.0.1",
+  "engines": {
+    "vscode": "^1.85.0"
+  },
+  "categories": [
+    "Other"
+  ],
+  "activationEvents": [
+    "onStartupFinished"
+  ],
+  "main": "./out/extension.js",
+  "contributes": {
+    "viewsContainers": {
+      "activitybar": [
+        {
+          "id": "code-review",
+          "title": "Code Review",
+          "icon": "resources/code-review.svg"
+        }
+      ]
+    },
+    "views": {
+      "code-review": [
+        {
+          "id": "code-review.repos",
+          "name": "Repositories"
+        }
+      ]
+    },
+    "commands": [
+      {
+        "command": "code-review.addRepo",
+        "title": "Add Repository",
+        "icon": "$(add)"
+      },
+      {
+        "command": "code-review.removeRepo",
+        "title": "Remove Repository",
+        "icon": "$(trash)"
+      },
+      {
+        "command": "code-review.refresh",
+        "title": "Refresh Repositories",
+        "icon": "$(refresh)"
+      },
+      {
+        "command": "code-review.openConsole",
+        "title": "Open Console",
+        "icon": "$(terminal)"
+      },
+      {
+        "command": "code-review.showDiff",
+        "title": "Show Diff",
+        "icon": "$(diff)"
+      },
+      {
+        "command": "code-review.openRepo",
+        "title": "Open Repository",
+        "icon": "$(window)"
+      }
+    ],
+    "menus": {
+      "view/title": [
+        {
+          "command": "code-review.addRepo",
+          "when": "view == code-review.repos",
+          "group": "navigation"
+        },
+        {
+          "command": "code-review.refresh",
+          "when": "view == code-review.repos",
+          "group": "navigation"
+        }
+      ],
+      "view/item/context": [
+        {
+          "command": "code-review.openConsole",
+          "when": "view == code-review.repos && viewItem == repo",
+          "group": "inline"
+        },
+        {
+          "command": "code-review.showDiff",
+          "when": "view == code-review.repos && viewItem == repo",
+          "group": "inline"
+        },
+        {
+          "command": "code-review.removeRepo",
+          "when": "view == code-review.repos && viewItem == repo"
+        }
+      ]
+    }
+  },
+  "scripts": {
+    "vscode:prepublish": "npm run compile",
+    "compile": "tsc -p ./",
+    "watch": "tsc -watch -p ./",
+    "lint": "eslint src --ext ts"
+  },
+  "devDependencies": {
+    "@types/node": "^20.10.0",
+    "@types/vscode": "^1.85.0",
+    "@typescript-eslint/eslint-plugin": "^6.13.0",
+    "@typescript-eslint/parser": "^6.13.0",
+    "eslint": "^8.54.0",
+    "typescript": "^5.3.0"
+  },
+  "dependencies": {
+    "simple-git": "^3.21.0"
+  }
+}
