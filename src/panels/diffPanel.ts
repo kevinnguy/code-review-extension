@@ -109,12 +109,10 @@ export class DiffPanel {
     this.setupFileWatcher(repo.path);
 
     if (this.activePanel) {
-      // FIRST: Set loading state and HTML to destroy old webview JavaScript
-      // This prevents stale scroll events from being associated with the wrong repo
+      // Set loading state to protect against stale scroll messages
       this.isLoading = true;
-      this.activePanel.webview.html = this.getLoadingHtml(repo.name);
 
-      // THEN: Update current repo reference (no more stale messages possible)
+      // Update current repo reference
       this.currentRepo = repo;
 
       // Update title and reveal
@@ -173,6 +171,10 @@ export class DiffPanel {
       } else if (message.command === 'updateSettings') {
         this.settings = { ...this.settings, ...message.settings };
         await this.context.workspaceState.update(DIFF_PANEL_SETTINGS_KEY, this.settings);
+      } else if (message.command === 'ready') {
+        // Content is rendered, make it visible
+        this.activePanel?.webview.postMessage({ command: 'show' });
+        this.isLoading = false;
       }
     });
 
@@ -298,7 +300,14 @@ export class DiffPanel {
       const html = this.getWebviewContent(repo, diffData, this.settings, scrollToRestore);
 
       panel.webview.html = html;
-      this.isLoading = false;
+
+      // Fallback in case 'ready' message is never received
+      setTimeout(() => {
+        if (this.isLoading && this.activePanel) {
+          this.activePanel.webview.postMessage({ command: 'show' });
+          this.isLoading = false;
+        }
+      }, 1000);
     } catch (error) {
       console.error('Error generating webview content:', error);
       panel.webview.html = `<html><body><h1>Error</h1><pre>${escapeHtml(String(error))}</pre></body></html>`;
@@ -374,6 +383,11 @@ export class DiffPanel {
       background-color: var(--bg-color);
       margin: 0;
       padding: 16px;
+      visibility: hidden;  /* Start hidden to prevent flash */
+    }
+
+    body.ready {
+      visibility: visible;  /* Show when ready */
     }
 
     .header {
@@ -972,23 +986,20 @@ export class DiffPanel {
       });
     });
 
-    // TODO: Scroll restoration is temporarily disabled due to visual flashing issues
-    // See GitHub issue for details and possible solutions
-    // The flash appears to happen at the VS Code webview level, not within our control
-    //
-    // Restore scroll position and show content after layout is complete
-    // Use double requestAnimationFrame to ensure content is fully rendered
-    // requestAnimationFrame(() => {
-    //   requestAnimationFrame(() => {
-    //     if (scrollToRestore !== null && scrollToRestore > 0) {
-    //       isRestoring = true;
-    //       window.scrollTo(0, scrollToRestore);
-    //       setTimeout(() => {
-    //         isRestoring = false;
-    //       }, 50);
-    //     }
-    //   });
-    // });
+    // Handle show command from extension
+    window.addEventListener('message', event => {
+      const message = event.data;
+      if (message.command === 'show') {
+        document.body.classList.add('ready');
+      }
+    });
+
+    // Send ready message after content is painted
+    requestAnimationFrame(() => {
+      requestAnimationFrame(() => {
+        vscode.postMessage({ command: 'ready' });
+      });
+    });
   </script>
 </body>
 </html>`;
