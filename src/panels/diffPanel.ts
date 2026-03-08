@@ -967,20 +967,15 @@ export class DiffPanel {
     // Initialize active states
     updateSettingsUI();
 
-    // Track scroll position continuously (debounced)
-    let scrollTimeout;
+    // Track scroll position immediately (no debounce to avoid stale values during auto-refresh)
     let isRestoring = false;
 
     window.addEventListener('scroll', () => {
       if (isRestoring) return;  // Skip saving during restoration
-
-      clearTimeout(scrollTimeout);
-      scrollTimeout = setTimeout(() => {
-        vscode.postMessage({
-          command: 'saveScrollPosition',
-          scrollTop: window.scrollY
-        });
-      }, 100);
+      vscode.postMessage({
+        command: 'saveScrollPosition',
+        scrollTop: window.scrollY
+      });
     });
 
     // Handle restore message from extension
