@@ -298,6 +298,34 @@ export class GitService {
     }
   }
 
+  async getUntrackedFilesWithContent(repoPath: string): Promise<DiffFile[]> {
+    try {
+      const git = this.getGit(repoPath);
+      const status = await git.status();
+      const fs = require('fs').promises;
+
+      const files: DiffFile[] = [];
+      for (const filename of status.not_added) {
+        try {
+          const fullPath = `${repoPath}/${filename}`;
+          const content = await fs.readFile(fullPath, 'utf-8');
+          const lines = content.split('\n');
+          files.push({
+            file: filename,
+            additions: lines.length,
+            deletions: 0,
+            diff: content,
+          });
+        } catch {
+          // Skip files that can't be read (binary, permissions, etc.)
+        }
+      }
+      return files;
+    } catch {
+      return [];
+    }
+  }
+
   async commitAll(repoPath: string, message: string): Promise<void> {
     const git = this.getGit(repoPath);
 

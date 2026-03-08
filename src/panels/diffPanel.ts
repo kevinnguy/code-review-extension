@@ -5,7 +5,7 @@ import { gitService, DiffFile, CommitInfo } from '../services/gitService';
 interface DiffData {
   staged: DiffFile[];
   unstaged: DiffFile[];
-  untracked: string[];
+  untracked: DiffFile[];
   branchDiff: DiffFile[];
   defaultBranch: string;
   hasCommits: boolean;
@@ -98,7 +98,7 @@ export class DiffPanel {
         gitService.hasCommits(repo.path),
         gitService.getStagedDiff(repo.path),
         gitService.getUnstagedDiff(repo.path),
-        gitService.getUntrackedFiles(repo.path),
+        gitService.getUntrackedFilesWithContent(repo.path),
         gitService.getDiffAgainstDefault(repo.path),
         gitService.getUnpushedCommits(repo.path),
         gitService.hasRemote(repo.path),
@@ -566,17 +566,28 @@ export class DiffPanel {
 </div>`;
   }
 
-  private renderUntrackedFile(file: string, repoPath: string): string {
-    const fullPath = `${repoPath}/${file}`;
+  private renderUntrackedFile(file: DiffFile, repoPath: string): string {
+    const fullPath = `${repoPath}/${file.file}`;
+    const lines = file.diff
+      .split('\n')
+      .map((line) => `<div class="diff-line addition">+${this.escapeHtml(line)}</div>`)
+      .join('');
 
     return `
 <div class="file">
-  <div class="file-header">
-    <span class="file-name untracked">${this.escapeHtml(file)}</span>
+  <div class="file-header" onclick="toggleFile(this)">
+    <span class="file-name untracked">
+      <span class="toggle-icon">▼</span>
+      ${this.escapeHtml(file.file)}
+    </span>
     <div class="file-stats">
       <span class="file-badge untracked">new</span>
-      <button onclick="openFile('${this.escapeHtml(fullPath)}')">Open</button>
+      <span class="stat additions">+${file.additions}</span>
+      <button onclick="event.stopPropagation(); openFile('${this.escapeHtml(fullPath)}')">Open</button>
     </div>
+  </div>
+  <div class="diff-content">
+    ${lines}
   </div>
 </div>`;
   }
