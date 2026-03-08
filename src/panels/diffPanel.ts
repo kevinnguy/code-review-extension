@@ -302,11 +302,43 @@ export class DiffPanel {
       overflow-x: auto;
     }
 
-    .diff-line { white-space: pre; padding: 0 12px; }
+    .diff-line-wrapper {
+      display: flex;
+      align-items: stretch;
+    }
+
+    .line-numbers {
+      display: flex;
+      flex-shrink: 0;
+      user-select: none;
+    }
+
+    .line-number {
+      display: inline-block;
+      width: 40px;
+      padding: 0 8px;
+      text-align: right;
+      font-family: var(--vscode-editor-font-family);
+      font-size: var(--vscode-editor-font-size, 13px);
+      color: var(--vscode-editorLineNumber-foreground, rgba(128, 128, 128, 0.7));
+      background: var(--vscode-editorGutter-background, transparent);
+      border-right: 1px solid var(--border-color);
+    }
+
+    .line-number.old {
+      border-right: none;
+    }
+
+    .diff-line { white-space: pre; padding: 0 12px; flex: 1; min-width: 0; }
     .diff-line.addition { background: var(--addition-bg); }
     .diff-line.deletion { background: var(--deletion-bg); }
     .diff-line.hunk { background: var(--hunk-bg); color: var(--vscode-descriptionForeground); padding: 4px 12px; }
     .diff-line.context { color: var(--vscode-descriptionForeground); }
+
+    .diff-line-wrapper.addition .line-numbers { background: var(--addition-bg); }
+    .diff-line-wrapper.deletion .line-numbers { background: var(--deletion-bg); }
+    .diff-line-wrapper.hunk .line-numbers { background: var(--hunk-bg); }
+    .diff-line-wrapper.hunk .line-number { border-right: none; }
 
     .collapsed .diff-content { display: none; }
     .toggle-icon { transition: transform 0.2s; }
@@ -528,17 +560,46 @@ export class DiffPanel {
   ): string {
     const fullPath = `${repoPath}/${file.file}`;
     const lines = file.diff.split('\n');
+
+    let oldLineNum = 0;
+    let newLineNum = 0;
+
     const diffLines = lines
       .slice(4)
       .map((line) => {
         if (line.startsWith('@@')) {
-          return `<div class="diff-line hunk">${this.escapeHtml(line)}</div>`;
+          // Parse hunk header: @@ -old,count +new,count @@
+          const match = line.match(/@@ -(\d+)(?:,\d+)? \+(\d+)(?:,\d+)? @@/);
+          if (match) {
+            oldLineNum = parseInt(match[1], 10);
+            newLineNum = parseInt(match[2], 10);
+          }
+          return `<div class="diff-line-wrapper hunk">
+            <span class="line-numbers"><span class="line-number old"></span><span class="line-number new"></span></span>
+            <div class="diff-line hunk">${this.escapeHtml(line)}</div>
+          </div>`;
         } else if (line.startsWith('+')) {
-          return `<div class="diff-line addition">${this.escapeHtml(line)}</div>`;
+          const lineHtml = `<div class="diff-line-wrapper addition">
+            <span class="line-numbers"><span class="line-number old"></span><span class="line-number new">${newLineNum}</span></span>
+            <div class="diff-line addition">${this.escapeHtml(line)}</div>
+          </div>`;
+          newLineNum++;
+          return lineHtml;
         } else if (line.startsWith('-')) {
-          return `<div class="diff-line deletion">${this.escapeHtml(line)}</div>`;
+          const lineHtml = `<div class="diff-line-wrapper deletion">
+            <span class="line-numbers"><span class="line-number old">${oldLineNum}</span><span class="line-number new"></span></span>
+            <div class="diff-line deletion">${this.escapeHtml(line)}</div>
+          </div>`;
+          oldLineNum++;
+          return lineHtml;
         } else {
-          return `<div class="diff-line context">${this.escapeHtml(line)}</div>`;
+          const lineHtml = `<div class="diff-line-wrapper context">
+            <span class="line-numbers"><span class="line-number old">${oldLineNum}</span><span class="line-number new">${newLineNum}</span></span>
+            <div class="diff-line context">${this.escapeHtml(line)}</div>
+          </div>`;
+          oldLineNum++;
+          newLineNum++;
+          return lineHtml;
         }
       })
       .join('');
@@ -568,9 +629,17 @@ export class DiffPanel {
 
   private renderUntrackedFile(file: DiffFile, repoPath: string): string {
     const fullPath = `${repoPath}/${file.file}`;
+    let lineNum = 1;
     const lines = file.diff
       .split('\n')
-      .map((line) => `<div class="diff-line addition">+${this.escapeHtml(line)}</div>`)
+      .map((line) => {
+        const lineHtml = `<div class="diff-line-wrapper addition">
+          <span class="line-numbers"><span class="line-number old"></span><span class="line-number new">${lineNum}</span></span>
+          <div class="diff-line addition">+${this.escapeHtml(line)}</div>
+        </div>`;
+        lineNum++;
+        return lineHtml;
+      })
       .join('');
 
     return `
