@@ -1,6 +1,6 @@
 import * as vscode from 'vscode';
 import { DetectedRepo } from '../utils/repoDetector';
-import { gitService, DiffFile } from '../services/gitService';
+import { gitService, DiffFile, CommitInfo } from '../services/gitService';
 
 interface DiffData {
   staged: DiffFile[];
@@ -9,6 +9,8 @@ interface DiffData {
   branchDiff: DiffFile[];
   defaultBranch: string;
   hasCommits: boolean;
+  unpushedCommits: CommitInfo[];
+  hasRemote: boolean;
 }
 
 export class DiffPanel {
@@ -59,6 +61,9 @@ export class DiffPanel {
       } else if (message.command === 'commit') {
         await this.commitChanges(this.currentRepo, message.message);
         await this.updatePanelContent(this.activePanel, this.currentRepo);
+      } else if (message.command === 'push') {
+        await this.pushChanges(this.currentRepo);
+        await this.updatePanelContent(this.activePanel, this.currentRepo);
       }
     });
 
@@ -74,11 +79,20 @@ export class DiffPanel {
     }
   }
 
+  async pushChanges(repo: DetectedRepo): Promise<void> {
+    try {
+      await gitService.push(repo.path);
+      vscode.window.showInformationMessage(`Pushed changes to remote`);
+    } catch (error) {
+      vscode.window.showErrorMessage(`Failed to push: ${error}`);
+    }
+  }
+
   private async updatePanelContent(
     panel: vscode.WebviewPanel,
     repo: DetectedRepo
   ): Promise<void> {
-    const [defaultBranch, hasCommits, staged, unstaged, untracked, branchDiff] =
+    const [defaultBranch, hasCommits, staged, unstaged, untracked, branchDiff, unpushedCommits, hasRemote] =
       await Promise.all([
         gitService.getDefaultBranch(repo.path),
         gitService.hasCommits(repo.path),
@@ -86,6 +100,8 @@ export class DiffPanel {
         gitService.getUnstagedDiff(repo.path),
         gitService.getUntrackedFiles(repo.path),
         gitService.getDiffAgainstDefault(repo.path),
+        gitService.getUnpushedCommits(repo.path),
+        gitService.hasRemote(repo.path),
       ]);
 
     const diffData: DiffData = {
@@ -95,6 +111,8 @@ export class DiffPanel {
       branchDiff,
       defaultBranch,
       hasCommits,
+      unpushedCommits,
+      hasRemote,
     };
 
     panel.webview.html = this.getWebviewContent(repo, diffData);
@@ -133,6 +151,18 @@ export class DiffPanel {
       (sum, f) => sum + f.deletions,
       0
     );
+
+    const unpushedCommitsHtml = data.unpushedCommits
+      .map((commit) => `
+        <div class="commit-item">
+          <span class="commit-hash">${this.escapeHtml(commit.shortHash)}</span>
+          <div class="commit-info">
+            <div class="commit-message">${this.escapeHtml(commit.message)}</div>
+            <div class="commit-meta">${this.escapeHtml(commit.author)} - ${this.escapeHtml(commit.date)}</div>
+          </div>
+        </div>
+      `)
+      .join('');
 
     return `<!DOCTYPE html>
 <html lang="en">
@@ -233,10 +263,13 @@ export class DiffPanel {
       margin-bottom: 12px;
       border: 1px solid var(--border-color);
       border-radius: 4px;
-      overflow: hidden;
+      overflow: clip;
     }
 
     .file-header {
+      position: sticky;
+      top: 0;
+      z-index: 10;
       display: flex;
       justify-content: space-between;
       align-items: center;
@@ -302,6 +335,70 @@ export class DiffPanel {
       display: flex;
       gap: 8px;
     }
+
+    .push-box {
+      background: var(--header-bg);
+      border: 1px solid var(--border-color);
+      border-radius: 4px;
+      padding: 12px;
+      margin-bottom: 20px;
+    }
+
+    .push-header {
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      margin-bottom: 12px;
+    }
+
+    .push-title {
+      font-weight: 500;
+      display: flex;
+      align-items: center;
+      gap: 8px;
+    }
+
+    .commit-list {
+      margin-bottom: 12px;
+      max-height: 200px;
+      overflow-y: auto;
+    }
+
+    .commit-item {
+      display: flex;
+      align-items: flex-start;
+      padding: 8px;
+      border-bottom: 1px solid var(--border-color);
+      gap: 12px;
+    }
+
+    .commit-item:last-child {
+      border-bottom: none;
+    }
+
+    .commit-hash {
+      font-family: var(--vscode-editor-font-family);
+      color: var(--vscode-textLink-foreground);
+      font-size: 0.85em;
+      flex-shrink: 0;
+    }
+
+    .commit-info {
+      flex: 1;
+      min-width: 0;
+    }
+
+    .commit-message {
+      white-space: nowrap;
+      overflow: hidden;
+      text-overflow: ellipsis;
+    }
+
+    .commit-meta {
+      font-size: 0.85em;
+      color: var(--vscode-descriptionForeground);
+      margin-top: 2px;
+    }
   </style>
 </head>
 <body>
@@ -320,6 +417,25 @@ export class DiffPanel {
     <input type="text" class="commit-input" id="commitMessage" placeholder="Commit message..." value="add all files" />
     <div class="commit-actions">
       <button class="btn btn-primary" onclick="commit()">Commit All Changes (${totalUncommittedFiles} files)</button>
+    </div>
+  </div>
+  ` : ''}
+
+  ${data.unpushedCommits.length > 0 ? `
+  <div class="push-box">
+    <div class="push-header">
+      <span class="push-title">
+        Unpushed Commits
+        <span class="section-badge">${data.unpushedCommits.length}</span>
+      </span>
+      ${data.hasRemote ? `
+        <button class="btn btn-primary" onclick="push()">Push to Remote</button>
+      ` : `
+        <span style="color: var(--vscode-descriptionForeground); font-size: 0.9em;">No remote configured</span>
+      `}
+    </div>
+    <div class="commit-list">
+      ${unpushedCommitsHtml}
     </div>
   </div>
   ` : ''}
@@ -395,6 +511,10 @@ export class DiffPanel {
     function commit() {
       const message = document.getElementById('commitMessage').value || 'add all files';
       vscode.postMessage({ command: 'commit', message: message });
+    }
+
+    function push() {
+      vscode.postMessage({ command: 'push' });
     }
   </script>
 </body>

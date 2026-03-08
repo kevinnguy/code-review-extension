@@ -13,6 +13,14 @@ export interface DiffFile {
   diff: string;
 }
 
+export interface CommitInfo {
+  hash: string;
+  shortHash: string;
+  message: string;
+  author: string;
+  date: string;
+}
+
 export class GitService {
   private getGit(repoPath: string): SimpleGit {
     return simpleGit(repoPath);
@@ -298,6 +306,68 @@ export class GitService {
 
     // Commit
     await git.commit(message);
+  }
+
+  async getUnpushedCommits(repoPath: string): Promise<CommitInfo[]> {
+    const git = this.getGit(repoPath);
+
+    try {
+      // Check if there's a remote tracking branch
+      const branch = await this.getCurrentBranch(repoPath);
+
+      // Check if remote exists
+      try {
+        await git.raw(['rev-parse', '--verify', `origin/${branch}`]);
+      } catch {
+        // No remote tracking branch - get all commits on this branch
+        try {
+          const log = await git.log();
+          return this.parseCommitLog(log.all);
+        } catch {
+          return [];
+        }
+      }
+
+      // Get commits that are in HEAD but not in origin/branch
+      const log = await git.log({ from: `origin/${branch}`, to: 'HEAD' });
+      return this.parseCommitLog(log.all);
+    } catch {
+      return [];
+    }
+  }
+
+  private parseCommitLog(commits: readonly { hash: string; message: string; author_name: string; date: string }[]): CommitInfo[] {
+    return commits.map(commit => ({
+      hash: commit.hash,
+      shortHash: commit.hash.substring(0, 7),
+      message: commit.message,
+      author: commit.author_name,
+      date: commit.date,
+    }));
+  }
+
+  async hasRemote(repoPath: string): Promise<boolean> {
+    try {
+      const git = this.getGit(repoPath);
+      const remotes = await git.getRemotes();
+      return remotes.length > 0;
+    } catch {
+      return false;
+    }
+  }
+
+  async push(repoPath: string): Promise<void> {
+    const git = this.getGit(repoPath);
+    const branch = await this.getCurrentBranch(repoPath);
+
+    // Check if upstream is set
+    try {
+      await git.raw(['rev-parse', '--verify', `origin/${branch}`]);
+      await git.push();
+    } catch {
+      // No upstream, push with -u
+      await git.push(['-u', 'origin', branch]);
+    }
   }
 }
 
