@@ -80,7 +80,7 @@ export class DiffPanel {
       }
       this.refreshTimeout = setTimeout(() => {
         if (this.activePanel && this.currentRepo) {
-          this.updatePanelContent(this.activePanel, this.currentRepo);
+          this.updatePanelContent(this.activePanel, this.currentRepo, false);
         }
       }, 500);
     };
@@ -122,7 +122,7 @@ export class DiffPanel {
       this.activePanel.reveal(viewColumn);
 
       try {
-        await this.updatePanelContent(this.activePanel, repo);
+        await this.updatePanelContent(this.activePanel, repo, true);
       } catch (error) {
         console.error('Failed to update diff panel content:', error);
       }
@@ -155,16 +155,16 @@ export class DiffPanel {
       if (!this.currentRepo || !this.activePanel) return;
 
       if (message.command === 'refresh') {
-        await this.updatePanelContent(this.activePanel, this.currentRepo);
+        await this.updatePanelContent(this.activePanel, this.currentRepo, false);
       } else if (message.command === 'openFile') {
         const uri = vscode.Uri.file(message.filePath);
         await vscode.window.showTextDocument(uri);
       } else if (message.command === 'commit') {
         await this.commitChanges(this.currentRepo, message.message);
-        await this.updatePanelContent(this.activePanel, this.currentRepo);
+        await this.updatePanelContent(this.activePanel, this.currentRepo, false);
       } else if (message.command === 'push') {
         await this.pushChanges(this.currentRepo);
-        await this.updatePanelContent(this.activePanel, this.currentRepo);
+        await this.updatePanelContent(this.activePanel, this.currentRepo, false);
       } else if (message.command === 'saveScrollPosition') {
         // Only save scroll position if not in loading state (prevents race condition during repo switch)
         if (this.currentRepo && !this.isLoading) {
@@ -177,7 +177,7 @@ export class DiffPanel {
     });
 
     try {
-      await this.updatePanelContent(this.activePanel, repo);
+      await this.updatePanelContent(this.activePanel, repo, true);
     } catch (error) {
       console.error('Failed to initialize diff panel content:', error);
     }
@@ -266,7 +266,8 @@ export class DiffPanel {
 
   private async updatePanelContent(
     panel: vscode.WebviewPanel,
-    repo: DetectedRepo
+    repo: DetectedRepo,
+    restoreScroll: boolean
   ): Promise<void> {
     try {
       const [defaultBranch, hasCommits, staged, unstaged, untracked, branchDiff, unpushedCommits, hasRemote] =
@@ -292,20 +293,12 @@ export class DiffPanel {
         hasRemote,
       };
 
-      const html = this.getWebviewContent(repo, diffData, this.settings);
+      // Get scroll position to restore (only when switching repos, not during auto-refresh)
+      const scrollToRestore = restoreScroll ? this.scrollPositions.get(repo.path) : undefined;
+      const html = this.getWebviewContent(repo, diffData, this.settings, scrollToRestore);
+
       panel.webview.html = html;
       this.isLoading = false;
-
-      // Restore scroll position for this repo if available
-      const savedScrollTop = this.scrollPositions.get(repo.path);
-      if (savedScrollTop !== undefined && savedScrollTop > 0) {
-        setTimeout(() => {
-          panel.webview.postMessage({
-            command: 'restoreScrollPosition',
-            scrollTop: savedScrollTop
-          });
-        }, 100);
-      }
     } catch (error) {
       console.error('Error generating webview content:', error);
       panel.webview.html = `<html><body><h1>Error</h1><pre>${escapeHtml(String(error))}</pre></body></html>`;
@@ -313,7 +306,7 @@ export class DiffPanel {
     }
   }
 
-  private getWebviewContent(repo: DetectedRepo, data: DiffData, settings: DiffPanelSettings): string {
+  private getWebviewContent(repo: DetectedRepo, data: DiffData, settings: DiffPanelSettings, scrollToRestore?: number): string {
     const hasUncommittedChanges =
       data.staged.length > 0 ||
       data.unstaged.length > 0 ||
@@ -907,6 +900,7 @@ export class DiffPanel {
     const vscode = acquireVsCodeApi();
     let currentSettings = { zoomLevel: ${settings.zoomLevel}, themeOverride: '${settings.themeOverride}' };
     const autoTheme = '${autoTheme}';
+    const scrollToRestore = ${scrollToRestore !== undefined ? scrollToRestore : 'null'};
 
     function refresh() {
       vscode.postMessage({ command: 'refresh' });
@@ -967,29 +961,34 @@ export class DiffPanel {
     // Initialize active states
     updateSettingsUI();
 
-    // Track scroll position immediately (no debounce to avoid stale values during auto-refresh)
+    // Track scroll position (skip during restoration to prevent overwriting)
     let isRestoring = false;
 
     window.addEventListener('scroll', () => {
-      if (isRestoring) return;  // Skip saving during restoration
+      if (isRestoring) return;
       vscode.postMessage({
         command: 'saveScrollPosition',
         scrollTop: window.scrollY
       });
     });
 
-    // Handle restore message from extension
-    window.addEventListener('message', event => {
-      const message = event.data;
-      if (message.command === 'restoreScrollPosition') {
-        isRestoring = true;
-        window.scrollTo(0, message.scrollTop);
-        // Clear flag after a short delay to allow scroll events to settle
-        setTimeout(() => {
-          isRestoring = false;
-        }, 50);
-      }
-    });
+    // TODO: Scroll restoration is temporarily disabled due to visual flashing issues
+    // See GitHub issue for details and possible solutions
+    // The flash appears to happen at the VS Code webview level, not within our control
+    //
+    // Restore scroll position and show content after layout is complete
+    // Use double requestAnimationFrame to ensure content is fully rendered
+    // requestAnimationFrame(() => {
+    //   requestAnimationFrame(() => {
+    //     if (scrollToRestore !== null && scrollToRestore > 0) {
+    //       isRestoring = true;
+    //       window.scrollTo(0, scrollToRestore);
+    //       setTimeout(() => {
+    //         isRestoring = false;
+    //       }, 50);
+    //     }
+    //   });
+    // });
   </script>
 </body>
 </html>`;
