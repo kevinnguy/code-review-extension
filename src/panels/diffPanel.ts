@@ -1,7 +1,24 @@
 import * as vscode from 'vscode';
-import { createHighlighter, Highlighter } from 'shiki';
+
+// eslint-disable-next-line @typescript-eslint/no-require-imports
+const Prism = require('prismjs');
+// eslint-disable-next-line @typescript-eslint/no-require-imports
+const loadLanguages = require('prismjs/components/');
+
+// Load all language components using Prism's Node.js loader
+loadLanguages([
+  'markup', 'css', 'clike', 'javascript', 'typescript', 'json', 'markdown',
+  'python', 'java', 'go', 'rust', 'c', 'cpp', 'csharp', 'php', 'ruby',
+  'swift', 'kotlin', 'scala', 'yaml', 'toml', 'sql', 'bash', 'docker', 'makefile'
+]);
+
 import { DetectedRepo } from '../utils/repoDetector';
 import { gitService, DiffFile, CommitInfo } from '../services/gitService';
+import {
+  escapeHtml,
+  getLanguageFromFile,
+  MAX_DIFF_LINES,
+} from '../utils/diffUtils';
 
 interface DiffData {
   staged: DiffFile[];
@@ -17,8 +34,6 @@ interface DiffData {
 export class DiffPanel {
   private activePanel: vscode.WebviewPanel | undefined;
   private currentRepo: DetectedRepo | undefined;
-  private highlighter: Highlighter | undefined;
-  private loadedLangs: Set<string> = new Set();
 
   async showDiff(
     repo: DetectedRepo,
@@ -31,7 +46,11 @@ export class DiffPanel {
       // Reuse existing panel - update title and content
       this.activePanel.title = `Diff: ${repo.name}`;
       this.activePanel.reveal(viewColumn);
-      await this.updatePanelContent(this.activePanel, repo);
+      try {
+        await this.updatePanelContent(this.activePanel, repo);
+      } catch (error) {
+        console.error('Failed to update diff panel content:', error);
+      }
       return;
     }
 
@@ -70,7 +89,11 @@ export class DiffPanel {
       }
     });
 
-    await this.updatePanelContent(this.activePanel, repo);
+    try {
+      await this.updatePanelContent(this.activePanel, repo);
+    } catch (error) {
+      console.error('Failed to initialize diff panel content:', error);
+    }
   }
 
   async commitChanges(repo: DetectedRepo, message: string): Promise<void> {
@@ -91,126 +114,38 @@ export class DiffPanel {
     }
   }
 
-  private getCurrentTheme(): 'github-light' | 'github-dark' {
+  private getCurrentTheme(): 'light' | 'dark' {
     const themeKind = vscode.window.activeColorTheme.kind;
-    return themeKind === vscode.ColorThemeKind.Light ? 'github-light' : 'github-dark';
+    return themeKind === vscode.ColorThemeKind.Light ? 'light' : 'dark';
   }
 
-  private async getHighlighter(): Promise<Highlighter> {
-    if (!this.highlighter) {
-      this.highlighter = await createHighlighter({
-        themes: ['github-light', 'github-dark'],
-        langs: [], // Start empty, load languages on demand
-      });
-    }
-    return this.highlighter;
-  }
-
-  private async ensureLanguageLoaded(lang: string): Promise<void> {
-    if (!this.highlighter || this.loadedLangs.has(lang)) {
-      return;
-    }
-    try {
-      await this.highlighter.loadLanguage(lang as Parameters<typeof this.highlighter.loadLanguage>[0]);
-      this.loadedLangs.add(lang);
-    } catch {
-      // Language not supported, will fall back to plaintext
-    }
-  }
-
-  private getLanguageFromFile(filename: string): string {
-    const ext = filename.split('.').pop()?.toLowerCase() || '';
-    const langMap: Record<string, string> = {
-      'ts': 'typescript',
-      'tsx': 'typescript',
-      'js': 'javascript',
-      'jsx': 'javascript',
-      'mjs': 'javascript',
-      'cjs': 'javascript',
-      'json': 'json',
-      'css': 'css',
-      'scss': 'css',
-      'less': 'css',
-      'html': 'html',
-      'htm': 'html',
-      'md': 'markdown',
-      'markdown': 'markdown',
-      'py': 'python',
-      'java': 'java',
-      'go': 'go',
-      'rs': 'rust',
-      'c': 'c',
-      'h': 'c',
-      'cpp': 'cpp',
-      'cc': 'cpp',
-      'cxx': 'cpp',
-      'hpp': 'cpp',
-      'cs': 'csharp',
-      'php': 'php',
-      'rb': 'ruby',
-      'swift': 'swift',
-      'kt': 'kotlin',
-      'kts': 'kotlin',
-      'scala': 'scala',
-      'yml': 'yaml',
-      'yaml': 'yaml',
-      'toml': 'toml',
-      'xml': 'xml',
-      'sql': 'sql',
-      'sh': 'bash',
-      'bash': 'bash',
-      'zsh': 'bash',
-      'dockerfile': 'dockerfile',
-      'makefile': 'makefile',
+  private getPrismLanguage(lang: string): string {
+    const mapping: Record<string, string> = {
+      'typescript': 'typescript',
+      'javascript': 'javascript',
+      'html': 'markup',
+      'dockerfile': 'docker',
+      'csharp': 'csharp',
+      'plaintext': 'plaintext',
     };
-
-    // Check for special filenames
-    const basename = filename.split('/').pop()?.toLowerCase() || '';
-    if (basename === 'dockerfile') return 'dockerfile';
-    if (basename === 'makefile') return 'makefile';
-
-    return langMap[ext] || 'plaintext';
+    return mapping[lang] || lang;
   }
 
-  private async highlightCode(code: string, lang: string, highlighter: Highlighter): Promise<string[]> {
-    // Ensure the language is loaded
-    await this.ensureLanguageLoaded(lang);
-
-    const theme = this.getCurrentTheme();
-    const effectiveLang = this.loadedLangs.has(lang) ? lang : 'plaintext';
-
+  private highlightCode(code: string, lang: string): string[] {
     try {
-      // Highlight entire code block at once
-      const html = highlighter.codeToHtml(code, { lang: effectiveLang, theme });
+      const prismLang = this.getPrismLanguage(lang);
+      const grammar = Prism.languages[prismLang];
 
-      // Extract the code content from <code>...</code>
-      const codeMatch = html.match(/<code>([\s\S]*?)<\/code>/);
-      if (!codeMatch) {
-        // Fallback: escape each line
-        return code.split('\n').map(line => this.escapeHtml(line));
+      if (!grammar) {
+        // Fallback to plain text
+        return code.split('\n').map(line => escapeHtml(line));
       }
 
-      const codeContent = codeMatch[1];
-
-      // Shiki wraps each line in <span class="line">...</span>
-      // Split by line spans to get individual highlighted lines
-      const lineRegex = /<span class="line">([\s\S]*?)<\/span>/g;
-      const lines: string[] = [];
-      let match;
-
-      while ((match = lineRegex.exec(codeContent)) !== null) {
-        lines.push(match[1]);
-      }
-
-      // If no line spans found (shouldn't happen), fall back to splitting
-      if (lines.length === 0) {
-        return code.split('\n').map(line => this.escapeHtml(line));
-      }
-
-      return lines;
-    } catch {
-      // Fallback: escape each line
-      return code.split('\n').map(line => this.escapeHtml(line));
+      const html = Prism.highlight(code, grammar, prismLang);
+      return html.split('\n');
+    } catch (error) {
+      // Fallback to plain text on error
+      return code.split('\n').map(line => escapeHtml(line));
     }
   }
 
@@ -218,33 +153,39 @@ export class DiffPanel {
     panel: vscode.WebviewPanel,
     repo: DetectedRepo
   ): Promise<void> {
-    const [defaultBranch, hasCommits, staged, unstaged, untracked, branchDiff, unpushedCommits, hasRemote] =
-      await Promise.all([
-        gitService.getDefaultBranch(repo.path),
-        gitService.hasCommits(repo.path),
-        gitService.getStagedDiff(repo.path),
-        gitService.getUnstagedDiff(repo.path),
-        gitService.getUntrackedFilesWithContent(repo.path),
-        gitService.getDiffAgainstDefault(repo.path),
-        gitService.getUnpushedCommits(repo.path),
-        gitService.hasRemote(repo.path),
-      ]);
+    try {
+      const [defaultBranch, hasCommits, staged, unstaged, untracked, branchDiff, unpushedCommits, hasRemote] =
+        await Promise.all([
+          gitService.getDefaultBranch(repo.path),
+          gitService.hasCommits(repo.path),
+          gitService.getStagedDiff(repo.path),
+          gitService.getUnstagedDiff(repo.path),
+          gitService.getUntrackedFilesWithContent(repo.path),
+          gitService.getDiffAgainstDefault(repo.path),
+          gitService.getUnpushedCommits(repo.path),
+          gitService.hasRemote(repo.path),
+        ]);
 
-    const diffData: DiffData = {
-      staged,
-      unstaged,
-      untracked,
-      branchDiff,
-      defaultBranch,
-      hasCommits,
-      unpushedCommits,
-      hasRemote,
-    };
+      const diffData: DiffData = {
+        staged,
+        unstaged,
+        untracked,
+        branchDiff,
+        defaultBranch,
+        hasCommits,
+        unpushedCommits,
+        hasRemote,
+      };
 
-    panel.webview.html = await this.getWebviewContent(repo, diffData);
+      const html = this.getWebviewContent(repo, diffData);
+      panel.webview.html = html;
+    } catch (error) {
+      console.error('Error generating webview content:', error);
+      panel.webview.html = `<html><body><h1>Error</h1><pre>${escapeHtml(String(error))}</pre></body></html>`;
+    }
   }
 
-  private async getWebviewContent(repo: DetectedRepo, data: DiffData): Promise<string> {
+  private getWebviewContent(repo: DetectedRepo, data: DiffData): string {
     const hasUncommittedChanges =
       data.staged.length > 0 ||
       data.unstaged.length > 0 ||
@@ -253,24 +194,13 @@ export class DiffPanel {
     const totalUncommittedFiles =
       data.staged.length + data.unstaged.length + data.untracked.length;
 
-    // Get the highlighter once for all files
-    const highlighter = await this.getHighlighter();
+    const theme = this.getCurrentTheme();
+    const themeClass = theme === 'light' ? 'light-theme' : 'dark-theme';
 
-    const stagedHtml = (await Promise.all(
-      data.staged.map((file) => this.renderFileDiff(file, repo.path, 'staged', highlighter))
-    )).join('');
-
-    const unstagedHtml = (await Promise.all(
-      data.unstaged.map((file) => this.renderFileDiff(file, repo.path, 'unstaged', highlighter))
-    )).join('');
-
-    const untrackedHtml = (await Promise.all(
-      data.untracked.map((file) => this.renderUntrackedFile(file, repo.path, highlighter))
-    )).join('');
-
-    const branchDiffHtml = (await Promise.all(
-      data.branchDiff.map((file) => this.renderFileDiff(file, repo.path, 'branch', highlighter))
-    )).join('');
+    const stagedHtml = data.staged.map((file) => this.renderFileDiff(file, repo.path, 'staged')).join('');
+    const unstagedHtml = data.unstaged.map((file) => this.renderFileDiff(file, repo.path, 'unstaged')).join('');
+    const untrackedHtml = data.untracked.map((file) => this.renderUntrackedFile(file, repo.path)).join('');
+    const branchDiffHtml = data.branchDiff.map((file) => this.renderFileDiff(file, repo.path, 'branch')).join('');
 
     const totalBranchAdditions = data.branchDiff.reduce(
       (sum, f) => sum + f.additions,
@@ -284,10 +214,10 @@ export class DiffPanel {
     const unpushedCommitsHtml = data.unpushedCommits
       .map((commit) => `
         <div class="commit-item">
-          <span class="commit-hash">${this.escapeHtml(commit.shortHash)}</span>
+          <span class="commit-hash">${escapeHtml(commit.shortHash)}</span>
           <div class="commit-info">
-            <div class="commit-message">${this.escapeHtml(commit.message)}</div>
-            <div class="commit-meta">${this.escapeHtml(commit.author)} - ${this.escapeHtml(commit.date)}</div>
+            <div class="commit-message">${escapeHtml(commit.message)}</div>
+            <div class="commit-meta">${escapeHtml(commit.author)} - ${escapeHtml(commit.date)}</div>
           </div>
         </div>
       `)
@@ -471,8 +401,8 @@ export class DiffPanel {
       user-select: none;
     }
 
-    /* Shiki syntax highlighting overrides */
-    .diff-line span.line { display: inline; }
+    /* Prism syntax highlighting - keep token spans inline */
+    .diff-line span { display: inline; }
     .diff-line code { background: transparent !important; }
     .diff-line pre { margin: 0; background: transparent !important; }
 
@@ -572,13 +502,85 @@ export class DiffPanel {
       color: var(--vscode-descriptionForeground);
       margin-top: 2px;
     }
+
+    /* Prism.js GitHub Light Theme */
+    .light-theme .diff-line .token.comment,
+    .light-theme .diff-line .token.prolog,
+    .light-theme .diff-line .token.doctype,
+    .light-theme .diff-line .token.cdata { color: #6a737d !important; }
+
+    .light-theme .diff-line .token.punctuation { color: #24292e !important; }
+
+    .light-theme .diff-line .token.property,
+    .light-theme .diff-line .token.tag,
+    .light-theme .diff-line .token.boolean,
+    .light-theme .diff-line .token.number,
+    .light-theme .diff-line .token.constant,
+    .light-theme .diff-line .token.symbol { color: #005cc5 !important; }
+
+    .light-theme .diff-line .token.selector,
+    .light-theme .diff-line .token.attr-name,
+    .light-theme .diff-line .token.string,
+    .light-theme .diff-line .token.char,
+    .light-theme .diff-line .token.builtin { color: #032f62 !important; }
+
+    .light-theme .diff-line .token.operator,
+    .light-theme .diff-line .token.entity,
+    .light-theme .diff-line .token.url,
+    .light-theme .diff-line .token.variable { color: #d73a49 !important; }
+
+    .light-theme .diff-line .token.atrule,
+    .light-theme .diff-line .token.attr-value,
+    .light-theme .diff-line .token.keyword { color: #d73a49 !important; }
+
+    .light-theme .diff-line .token.function,
+    .light-theme .diff-line .token.class-name { color: #6f42c1 !important; }
+
+    .light-theme .diff-line .token.regex,
+    .light-theme .diff-line .token.important { color: #e36209 !important; }
+
+    /* Prism.js GitHub Dark Theme */
+    .dark-theme .diff-line .token.comment,
+    .dark-theme .diff-line .token.prolog,
+    .dark-theme .diff-line .token.doctype,
+    .dark-theme .diff-line .token.cdata { color: #8b949e !important; }
+
+    .dark-theme .diff-line .token.punctuation { color: #c9d1d9 !important; }
+
+    .dark-theme .diff-line .token.property,
+    .dark-theme .diff-line .token.tag,
+    .dark-theme .diff-line .token.boolean,
+    .dark-theme .diff-line .token.number,
+    .dark-theme .diff-line .token.constant,
+    .dark-theme .diff-line .token.symbol { color: #79c0ff !important; }
+
+    .dark-theme .diff-line .token.selector,
+    .dark-theme .diff-line .token.attr-name,
+    .dark-theme .diff-line .token.string,
+    .dark-theme .diff-line .token.char,
+    .dark-theme .diff-line .token.builtin { color: #a5d6ff !important; }
+
+    .dark-theme .diff-line .token.operator,
+    .dark-theme .diff-line .token.entity,
+    .dark-theme .diff-line .token.url,
+    .dark-theme .diff-line .token.variable { color: #ff7b72 !important; }
+
+    .dark-theme .diff-line .token.atrule,
+    .dark-theme .diff-line .token.attr-value,
+    .dark-theme .diff-line .token.keyword { color: #ff7b72 !important; }
+
+    .dark-theme .diff-line .token.function,
+    .dark-theme .diff-line .token.class-name { color: #d2a8ff !important; }
+
+    .dark-theme .diff-line .token.regex,
+    .dark-theme .diff-line .token.important { color: #ffa657 !important; }
   </style>
 </head>
-<body>
+<body class="${themeClass}">
   <div class="header">
     <div>
-      <h1>${this.escapeHtml(repo.name)}</h1>
-      <div class="header-info">Branch: <strong>${this.escapeHtml(repo.branch)}</strong></div>
+      <h1>${escapeHtml(repo.name)}</h1>
+      <div class="header-info">Branch: <strong>${escapeHtml(repo.branch)}</strong></div>
     </div>
     <div class="actions">
       <button class="btn" onclick="refresh()">Refresh</button>
@@ -646,7 +648,7 @@ export class DiffPanel {
   ${data.hasCommits && data.branchDiff.length > 0 ? `
   <div class="section">
     <div class="section-header">
-      <span>Changes vs ${this.escapeHtml(data.defaultBranch)}</span>
+      <span>Changes vs ${escapeHtml(data.defaultBranch)}</span>
       <div class="stats">
         <span class="stat additions">+${totalBranchAdditions}</span>
         <span class="stat deletions">-${totalBranchDeletions}</span>
@@ -660,7 +662,7 @@ export class DiffPanel {
   ${!hasUncommittedChanges && data.branchDiff.length === 0 ? `
   <div class="no-changes">
     ${data.hasCommits
-      ? `No changes compared to ${this.escapeHtml(data.defaultBranch)}`
+      ? `No changes compared to ${escapeHtml(data.defaultBranch)}`
       : 'No commits yet. Make changes and commit to get started.'}
   </div>
   ` : ''}
@@ -694,15 +696,18 @@ export class DiffPanel {
 </html>`;
   }
 
-  private async renderFileDiff(
+  private renderFileDiff(
     file: DiffFile,
     repoPath: string,
-    type: 'staged' | 'unstaged' | 'branch',
-    highlighter: Highlighter
-  ): Promise<string> {
+    type: 'staged' | 'unstaged' | 'branch'
+  ): string {
     const fullPath = `${repoPath}/${file.file}`;
-    const lines = file.diff.split('\n');
-    const lang = this.getLanguageFromFile(file.file);
+    const allLines = file.diff.split('\n');
+    const lang = getLanguageFromFile(file.file);
+
+    // Check if diff exceeds size limit
+    const isTruncated = allLines.length > MAX_DIFF_LINES;
+    const lines = isTruncated ? allLines.slice(0, MAX_DIFF_LINES) : allLines;
 
     // First pass: synchronously compute line metadata
     interface LineMeta {
@@ -748,7 +753,7 @@ export class DiffPanel {
 
     // Second pass: highlight all code lines in batch
     const highlightedLines = codeLines.length > 0
-      ? await this.highlightCode(codeLines.join('\n'), lang, highlighter)
+      ? this.highlightCode(codeLines.join('\n'), lang)
       : [];
 
     // Third pass: combine metadata with highlighted output
@@ -757,11 +762,11 @@ export class DiffPanel {
       if (meta.type === 'hunk') {
         return `<div class="diff-line-wrapper hunk">
           <span class="line-numbers"><span class="line-number old"></span><span class="line-number new"></span></span>
-          <div class="diff-line hunk">${this.escapeHtml(meta.rawLine)}</div>
+          <div class="diff-line hunk">${escapeHtml(meta.rawLine)}</div>
         </div>`;
       }
 
-      const highlighted = highlightedLines[codeIndex++] || this.escapeHtml(meta.code);
+      const highlighted = highlightedLines[codeIndex++] || escapeHtml(meta.code);
 
       if (meta.type === 'addition') {
         return `<div class="diff-line-wrapper addition">
@@ -784,33 +789,51 @@ export class DiffPanel {
     const badgeClass = type;
     const badgeText = type === 'branch' ? '' : type;
 
+    const truncationMessage = isTruncated
+      ? `<div class="diff-line-wrapper hunk">
+          <span class="line-numbers"><span class="line-number old"></span><span class="line-number new"></span></span>
+          <div class="diff-line hunk">... Diff truncated (${allLines.length - MAX_DIFF_LINES} more lines). Open file to view full content.</div>
+        </div>`
+      : '';
+
     return `
 <div class="file">
   <div class="file-header" onclick="toggleFile(this)">
     <span class="file-name">
       <span class="toggle-icon">▼</span>
-      ${this.escapeHtml(file.file)}
+      ${escapeHtml(file.file)}
     </span>
     <div class="file-stats">
       ${badgeText ? `<span class="file-badge ${badgeClass}">${badgeText}</span>` : ''}
       <span class="stat additions">+${file.additions}</span>
       <span class="stat deletions">-${file.deletions}</span>
-      <button onclick="event.stopPropagation(); openFile('${this.escapeHtml(fullPath)}')">Open</button>
+      <button onclick="event.stopPropagation(); openFile('${escapeHtml(fullPath)}')">Open</button>
     </div>
   </div>
   <div class="diff-content">
     ${diffLines.join('')}
+    ${truncationMessage}
   </div>
 </div>`;
   }
 
-  private async renderUntrackedFile(file: DiffFile, repoPath: string, highlighter: Highlighter): Promise<string> {
+  private renderUntrackedFile(
+    file: DiffFile,
+    repoPath: string
+  ): string {
     const fullPath = `${repoPath}/${file.file}`;
-    const lang = this.getLanguageFromFile(file.file);
-    const fileContent = file.diff;
+    const lang = getLanguageFromFile(file.file);
+    const allContentLines = file.diff.split('\n');
 
-    // Highlight entire file content at once
-    const highlightedLines = await this.highlightCode(fileContent, lang, highlighter);
+    // Check if file exceeds size limit
+    const isTruncated = allContentLines.length > MAX_DIFF_LINES;
+    const contentLines = isTruncated
+      ? allContentLines.slice(0, MAX_DIFF_LINES)
+      : allContentLines;
+    const fileContent = contentLines.join('\n');
+
+    // Highlight file content at once
+    const highlightedLines = this.highlightCode(fileContent, lang);
 
     // Build HTML for each line with pre-computed line numbers
     const lines = highlightedLines.map((highlighted, index) => {
@@ -821,32 +844,31 @@ export class DiffPanel {
       </div>`;
     });
 
+    const truncationMessage = isTruncated
+      ? `<div class="diff-line-wrapper hunk">
+          <span class="line-numbers"><span class="line-number old"></span><span class="line-number new"></span></span>
+          <div class="diff-line hunk">... File truncated (${allContentLines.length - MAX_DIFF_LINES} more lines). Open file to view full content.</div>
+        </div>`
+      : '';
+
     return `
 <div class="file">
   <div class="file-header" onclick="toggleFile(this)">
     <span class="file-name untracked">
       <span class="toggle-icon">▼</span>
-      ${this.escapeHtml(file.file)}
+      ${escapeHtml(file.file)}
     </span>
     <div class="file-stats">
       <span class="file-badge untracked">new</span>
       <span class="stat additions">+${file.additions}</span>
-      <button onclick="event.stopPropagation(); openFile('${this.escapeHtml(fullPath)}')">Open</button>
+      <button onclick="event.stopPropagation(); openFile('${escapeHtml(fullPath)}')">Open</button>
     </div>
   </div>
   <div class="diff-content">
     ${lines.join('')}
+    ${truncationMessage}
   </div>
 </div>`;
-  }
-
-  private escapeHtml(text: string): string {
-    return text
-      .replace(/&/g, '&amp;')
-      .replace(/</g, '&lt;')
-      .replace(/>/g, '&gt;')
-      .replace(/"/g, '&quot;')
-      .replace(/'/g, '&#039;');
   }
 
   dispose(): void {
